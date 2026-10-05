@@ -1,0 +1,122 @@
+import { Link, useNavigate } from 'react-router-dom'
+import { useCart } from '../lib/CartContext'
+import { SHIPPING_FEE, FREE_SHIPPING_THRESHOLD, calcShipping } from '../lib/shipping'
+
+export default function Cart() {
+  const { items, updateQty, removeItem, totalPrice } = useCart()
+  const navigate = useNavigate()
+  // Rentals are handed over and returned in person — no courier shipping applies
+  // when the cart is rental-only.
+  const hasOnlyRentals = items.length > 0 && items.every((i) => i.isRental)
+  const shipping = hasOnlyRentals ? 0 : calcShipping(totalPrice)
+
+  if (items.length === 0) {
+    return (
+      <div className="max-w-xl mx-auto px-5 py-24 text-center">
+        <h1 className="font-display text-3xl text-maroon mb-3">Your cart is empty</h1>
+        <p className="text-ink/60 mb-6">Add a piece from the shop to see it here.</p>
+        <Link to="/" className="inline-block px-6 py-3 rounded-md bg-maroon text-ivory font-medium hover:bg-maroon-dark">
+          Browse the shop
+        </Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="max-w-3xl mx-auto px-5 py-12">
+      <Link
+        to="/"
+        className="text-maroon hover:text-maroon/80 flex items-center gap-2 font-medium mb-6 transition-colors"
+      >
+        <span>←</span>
+        <span>Back to Shop</span>
+      </Link>
+
+      <h1 className="font-display text-3xl text-maroon mb-8">Your cart</h1>
+
+      <div className="divide-y divide-maroon/10">
+        {items.map((item) => (
+          <div key={`${item.productId}-${item.size}-${item.color}-${item.rentalDate || ''}`} className="flex gap-4 py-5">
+            <img src={item.image} alt={item.name || 'Cart item'} loading="lazy" className="w-20 h-24 object-cover rounded-md bg-teal/5" />
+            <div className="flex-1">
+              {item.isRental && (
+                <span className="inline-block text-[11px] font-semibold tracking-wide text-teal bg-teal/10 rounded-full px-2 py-0.5 mb-1">
+                  RENTAL
+                </span>
+              )}
+              <p className="font-display text-lg">{item.name}</p>
+              <p className="text-sm text-ink/60">
+                {item.size && `Size ${item.size}`} {item.color && `· ${item.color}`}
+              </p>
+
+              {item.isRental ? (
+                <div className="text-sm text-ink/70 mt-1 space-y-0.5">
+                  <p>Pickup date: <strong>{new Date(item.rentalDate).toLocaleDateString('en-IN', { weekday: 'short', day: 'numeric', month: 'short' })}</strong></p>
+                  <p>Rental ₹{item.rentalPrice} + ₹{item.rentalDeposit} refundable deposit</p>
+                  <p className="text-maroon font-medium">₹{item.price.toLocaleString('en-IN')} due now</p>
+                </div>
+              ) : (
+                <p className="text-maroon font-medium mt-1">₹{item.price.toLocaleString('en-IN')}</p>
+              )}
+
+              <div className="flex items-center gap-3 mt-3">
+                {!item.isRental && (
+                  <div className="flex items-center border border-maroon/20 rounded-md">
+                    <button
+                      className="px-3 py-1 text-lg"
+                      onClick={() => updateQty(item.productId, item.size, item.color, item.qty - 1)}
+                    >
+                      −
+                    </button>
+                    <span className="px-3">{item.qty}</span>
+                    <button
+                      className="px-3 py-1 text-lg"
+                      onClick={() => updateQty(item.productId, item.size, item.color, item.qty + 1)}
+                    >
+                      +
+                    </button>
+                  </div>
+                )}
+                <button
+                  className="text-sm text-ink/50 hover:text-maroon"
+                  onClick={() => removeItem(item.productId, item.size, item.color, item.rentalDate)}
+                >
+                  Remove
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-8 border-t border-maroon/10 pt-6 space-y-2">
+        <div className="flex items-center justify-between text-sm text-ink/70">
+          <span>Subtotal</span>
+          <span>₹{totalPrice.toLocaleString('en-IN')}</span>
+        </div>
+        <div className="flex items-center justify-between text-sm text-ink/70">
+          <span>{hasOnlyRentals ? 'Shipping (in-person pickup)' : 'Shipping'}</span>
+          <span>{hasOnlyRentals ? 'N/A' : shipping === 0 ? 'Free' : `₹${shipping}`}</span>
+        </div>
+        {!hasOnlyRentals && shipping > 0 && (
+          <p className="text-xs text-ink/45">
+            Add ₹{(FREE_SHIPPING_THRESHOLD - totalPrice).toLocaleString('en-IN')} more for free shipping
+          </p>
+        )}
+        <div className="flex items-center justify-between pt-2 border-t border-maroon/10">
+          <span className="text-ink/70">Total</span>
+          <span className="font-display text-2xl text-maroon">
+            ₹{(totalPrice + shipping).toLocaleString('en-IN')}
+          </span>
+        </div>
+      </div>
+
+      <button
+        onClick={() => navigate('/checkout')}
+        className="mt-6 w-full py-3.5 rounded-md bg-maroon text-ivory font-medium hover:bg-maroon-dark transition-colors"
+      >
+        Proceed to checkout
+      </button>
+    </div>
+  )
+}

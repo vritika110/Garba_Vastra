@@ -1,0 +1,754 @@
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { supabase } from '../lib/supabaseClient'
+
+const EMPTY_FORM = {
+  id: null,
+  name: '',
+  description: '',
+  price: '',
+  category: 'Chaniya Choli',
+  sizes: '',
+  colors: '',
+  stock: '',
+  is_active: true,
+  image_url: '',
+  video_url: '',
+  extraImages: [], // existing gallery image URLs (when editing)
+  specs: [{ key: '', value: '' }],
+  is_rental: false,
+  rental_price: '600',
+  rental_deposit: '50',
+  rental_start_date: '',
+  rental_end_date: '',
+  rental_return_hours: '24',
+  rental_eligibility: 'Open only to Jain College students.',
+}
+
+export default function Admin() {
+  const navigate = useNavigate()
+  const [checkingAuth, setCheckingAuth] = useState(true)
+  const [tab, setTab] = useState('products')
+
+  const [products, setProducts] = useState([])
+  const [orders, setOrders] = useState([])
+  const [form, setForm] = useState(EMPTY_FORM)
+  const [imageFile, setImageFile] = useState(null)
+  const [videoFile, setVideoFile] = useState(null)
+  const [extraImageFiles, setExtraImageFiles] = useState([]) // newly picked files, not yet uploaded
+  const [saving, setSaving] = useState(false)
+  const [savingStep, setSavingStep] = useState('')
+  const [message, setMessage] = useState('')
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => {
+      if (!data.session) {
+        navigate('/admin/login')
+      } else {
+        setCheckingAuth(false)
+        loadProducts()
+        loadOrders()
+      }
+    })
+  }, [])
+
+  async function loadProducts() {
+    const { data } = await supabase.from('products').select('*').order('created_at', { ascending: false })
+    setProducts(data || [])
+  }
+
+  async function loadOrders() {
+    const { data } = await supabase
+      .from('orders')
+      .select('*')
+      .eq('payment_status', 'paid')
+      .order('created_at', { ascending: false })
+    setOrders(data || [])
+  }
+
+  async function handleLogout() {
+    await supabase.auth.signOut()
+    navigate('/admin/login')
+  }
+
+  function update(field, value) {
+    setForm((f) => ({ ...f, [field]: value }))
+  }
+
+  function updateSpec(index, field, value) {
+    setForm((f) => {
+      const specs = [...f.specs]
+      specs[index] = { ...specs[index], [field]: value }
+      return { ...f, specs }
+    })
+  }
+
+  function addSpecRow() {
+    setForm((f) => ({ ...f, specs: [...f.specs, { key: '', value: '' }] }))
+  }
+
+  function removeSpecRow(index) {
+    setForm((f) => ({ ...f, specs: f.specs.filter((_, i) => i !== index) }))
+  }
+
+  function editProduct(p) {
+    const specEntries = Object.entries(p.specifications || {})
+    setForm({
+      id: p.id,
+      name: p.name,
+      description: p.description || '',
+      price: p.price,
+      category: p.category || '',
+      sizes: (p.sizes || []).join(', '),
+      colors: (p.colors || []).join(', '),
+      stock: p.stock,
+      is_active: p.is_active,
+      image_url: p.image_url,
+      video_url: p.video_url || '',
+      extraImages: p.images || [],
+      specs: specEntries.length > 0
+        ? specEntries.map(([key, value]) => ({ key, value }))
+        : [{ key: '', value: '' }],
+      is_rental: p.is_rental || false,
+      rental_price: p.rental_price ?? '600',
+      rental_deposit: p.rental_deposit ?? '50',
+      rental_start_date: p.rental_start_date || '',
+      rental_end_date: p.rental_end_date || '',
+      rental_return_hours: p.rental_return_hours ?? '24',
+      rental_eligibility: p.rental_eligibility || 'Open only to Jain College students.',
+    })
+    setImageFile(null)
+    setVideoFile(null)
+    setExtraImageFiles([])
+    setSavingStep('')
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  function removeExtraImage(index) {
+    setForm((f) => ({ ...f, extraImages: f.extraImages.filter((_, i) => i !== index) }))
+  }
+
+  function removeExtraImageFile(index) {
+    setExtraImageFiles((files) => files.filter((_, i) => i !== index))
+  }
+
+  function resetForm() {
+    setForm(EMPTY_FORM)
+    setImageFile(null)
+    setVideoFile(null)
+    setExtraImageFiles([])
+    setSavingStep('')
+  }
+
+  async function handleSaveProduct(e) {
+    e.preventDefault()
+    setSaving(true)
+    setMessage('')
+    setSavingStep('Preparing product...')
+
+    try {
+      let imageUrl = form.image_url
+      let videoUrl = form.video_url
+
+      // If a new image file was chosen, upload it to Supabase Storage first
+      if (imageFile) {
+        setSavingStep('Uploading main photo…')
+        const ext = imageFile.name.split('.').pop()
+        const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(path, imageFile)
+        if (uploadError) throw uploadError
+        const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(path)
+        imageUrl = publicUrlData.publicUrl
+      }
+
+      if (!imageUrl) throw new Error('Please add a main image (upload a file or paste a URL).')
+
+      // If a new video file was chosen, upload it to Supabase Storage
+      if (videoFile) {
+        setSavingStep('Uploading product video (this may take a few moments)…')
+        const ext = videoFile.name.split('.').pop()
+        const path = `video-${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+        const { error: uploadError } = await supabase.storage
+          .from('product-images')
+          .upload(path, videoFile, {
+            contentType: videoFile.type || 'video/mp4',
+            upsert: false,
+          })
+        if (uploadError) throw uploadError
+        const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(path)
+        videoUrl = publicUrlData.publicUrl
+      }
+
+      // Upload any newly-picked gallery photos, then merge with any that
+      // already existed on this product (from a previous edit)
+      const newlyUploadedUrls = []
+      if (extraImageFiles.length > 0) {
+        setSavingStep(`Uploading ${extraImageFiles.length} additional photo(s)…`)
+        for (const file of extraImageFiles) {
+          const ext = file.name.split('.').pop()
+          const path = `${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`
+          const { error: uploadError } = await supabase.storage.from('product-images').upload(path, file)
+          if (uploadError) throw uploadError
+          const { data: publicUrlData } = supabase.storage.from('product-images').getPublicUrl(path)
+          newlyUploadedUrls.push(publicUrlData.publicUrl)
+        }
+      }
+      const images = [...form.extraImages, ...newlyUploadedUrls]
+
+      setSavingStep('Saving product details…')
+      const specifications = {}
+      form.specs.forEach(({ key, value }) => {
+        if (key.trim() && value.trim()) specifications[key.trim()] = value.trim()
+      })
+
+      const payload = {
+        name: form.name,
+        description: form.description,
+        price: Number(form.price),
+        category: form.category,
+        sizes: form.sizes.split(',').map((s) => s.trim()).filter(Boolean),
+        colors: form.colors.split(',').map((c) => c.trim()).filter(Boolean),
+        stock: Number(form.stock),
+        is_active: form.is_active,
+        image_url: imageUrl,
+        video_url: videoUrl ? videoUrl.trim() : null,
+        images,
+        specifications,
+        is_rental: form.is_rental,
+        rental_price: form.is_rental ? Number(form.rental_price) : null,
+        rental_deposit: form.is_rental ? Number(form.rental_deposit) : null,
+        rental_start_date: form.is_rental ? form.rental_start_date || null : null,
+        rental_end_date: form.is_rental ? form.rental_end_date || null : null,
+        rental_return_hours: form.is_rental ? Number(form.rental_return_hours) : 24,
+        rental_eligibility: form.is_rental ? form.rental_eligibility : null,
+      }
+
+      if (form.id) {
+        const { error } = await supabase.from('products').update(payload).eq('id', form.id)
+        if (error) throw error
+        setMessage('Product updated ✓')
+      } else {
+        const { error } = await supabase.from('products').insert(payload)
+        if (error) throw error
+        setMessage('Product added ✓')
+      }
+
+      resetForm()
+      loadProducts()
+    } catch (err) {
+      setMessage('Error: ' + err.message)
+    } finally {
+      setSaving(false)
+      setSavingStep('')
+    }
+  }
+
+  async function deleteProduct(id) {
+    if (!confirm('Delete this product? This cannot be undone.')) return
+    await supabase.from('products').delete().eq('id', id)
+    loadProducts()
+  }
+
+  async function quickRestock(id, currentStock) {
+    const amount = prompt('Add how many pieces to stock?', '5')
+    if (!amount || isNaN(amount)) return
+    await supabase.from('products').update({ stock: currentStock + Number(amount) }).eq('id', id)
+    loadProducts()
+  }
+
+  async function updateOrder(id, fields) {
+    await supabase.from('orders').update(fields).eq('id', id)
+    loadOrders()
+  }
+
+  if (checkingAuth) return <p className="text-center py-24 text-ink/50">Checking login…</p>
+
+  return (
+    <div className="max-w-5xl mx-auto px-5 py-10">
+      <div className="flex items-center justify-between mb-8">
+        <h1 className="font-display text-3xl text-maroon">Admin dashboard</h1>
+        <button onClick={handleLogout} className="text-sm text-ink/50 hover:text-maroon">
+          Log out
+        </button>
+      </div>
+
+      <div className="flex gap-6 border-b border-maroon/10 mb-8">
+        {['products', 'orders'].map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={`pb-3 text-sm font-medium capitalize border-b-2 -mb-px transition-colors ${
+              tab === t ? 'border-maroon text-maroon' : 'border-transparent text-ink/50 hover:text-ink'
+            }`}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'products' && (
+        <div className="grid md:grid-cols-2 gap-10">
+          <div>
+            <h2 className="font-display text-xl text-maroon mb-4">
+              {form.id ? 'Edit piece' : 'Add a new piece'}
+            </h2>
+            <form onSubmit={handleSaveProduct} className="space-y-3">
+              <input
+                placeholder="Name"
+                value={form.name}
+                onChange={(e) => update('name', e.target.value)}
+                required
+                className="w-full border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+              />
+              <textarea
+                placeholder="Description"
+                value={form.description}
+                onChange={(e) => update('description', e.target.value)}
+                rows={3}
+                className="w-full border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+              />
+              <div className="flex gap-3">
+                <input
+                  type="number"
+                  placeholder="Price (₹)"
+                  value={form.price}
+                  onChange={(e) => update('price', e.target.value)}
+                  required
+                  className="flex-1 border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                />
+                <input
+                  type="number"
+                  placeholder="Stock count"
+                  value={form.stock}
+                  onChange={(e) => update('stock', e.target.value)}
+                  required
+                  className="flex-1 border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                />
+              </div>
+              <input
+                placeholder="Category (e.g. Chaniya Choli, Dupatta)"
+                value={form.category}
+                onChange={(e) => update('category', e.target.value)}
+                className="w-full border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+              />
+              <input
+                placeholder="Sizes, comma separated (e.g. S, M, L, XL)"
+                value={form.sizes}
+                onChange={(e) => update('sizes', e.target.value)}
+                className="w-full border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+              />
+              <input
+                placeholder="Colors, comma separated (e.g. Red, Teal)"
+                value={form.colors}
+                onChange={(e) => update('colors', e.target.value)}
+                className="w-full border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+              />
+
+              <div>
+                <label className="block text-sm font-medium mb-1.5">Main photo</label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(e) => setImageFile(e.target.files[0])}
+                  className="text-sm"
+                />
+                <p className="text-xs text-ink/50 mt-1">or paste an image URL below instead</p>
+                <input
+                  placeholder="Image URL"
+                  value={form.image_url}
+                  onChange={(e) => update('image_url', e.target.value)}
+                  className="w-full mt-1.5 border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                />
+                <p className="text-xs text-ink/50 mt-1">This is the cover photo shown on the shop grid.</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  Additional photos (customers can scroll through these on the product page)
+                </label>
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={(e) => setExtraImageFiles((prev) => [...prev, ...Array.from(e.target.files)])}
+                  className="text-sm"
+                />
+
+                {(form.extraImages.length > 0 || extraImageFiles.length > 0) && (
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {form.extraImages.map((url, i) => (
+                      <div key={`existing-${i}`} className="relative">
+                        <img src={url} alt={`Gallery preview ${i + 1}`} loading="lazy" className="w-16 h-20 object-cover rounded border border-maroon/10" />
+                        <button
+                          type="button"
+                          onClick={() => removeExtraImage(i)}
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-maroon text-ivory text-xs flex items-center justify-center"
+                          aria-label="Remove photo"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                    {extraImageFiles.map((file, i) => (
+                      <div key={`new-${i}`} className="relative">
+                        <img
+                          src={URL.createObjectURL(file)}
+                          alt={`New upload preview ${i + 1}`}
+                          loading="lazy"
+                          className="w-16 h-20 object-cover rounded border border-teal/30"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeExtraImageFile(i)}
+                          className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-maroon text-ivory text-xs flex items-center justify-center"
+                          aria-label="Remove photo"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  Product video (optional — animated preview on card & detail gallery)
+                </label>
+                <input
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime"
+                  onChange={(e) => {
+                    const file = e.target.files[0]
+                    setVideoFile(file || null)
+                  }}
+                  className="text-sm block w-full file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-semibold file:bg-teal/10 file:text-teal hover:file:bg-teal/20 cursor-pointer"
+                />
+                <p className="text-xs text-ink/50 mt-1">or paste a video URL below instead</p>
+                <input
+                  placeholder="Video URL (e.g. .mp4, .webm, or Supabase public URL)"
+                  value={form.video_url}
+                  onChange={(e) => update('video_url', e.target.value)}
+                  className="w-full mt-1.5 border border-maroon/20 rounded-md px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-maroon/40 text-sm"
+                />
+
+                {(videoFile || form.video_url) && (
+                  <div className="mt-3 p-3 bg-teal/5 rounded-md border border-teal/20">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-medium text-teal flex items-center gap-1.5">
+                        <span className="inline-block w-2 h-2 rounded-full bg-teal animate-pulse" />
+                        {videoFile
+                          ? `New video selected: ${videoFile.name} (${(videoFile.size / (1024 * 1024)).toFixed(1)} MB)`
+                          : 'Current video attached'}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVideoFile(null)
+                          update('video_url', '')
+                        }}
+                        className="text-xs text-red-600 hover:underline"
+                      >
+                        Remove video
+                      </button>
+                    </div>
+                    <video
+                      src={videoFile ? URL.createObjectURL(videoFile) : form.video_url}
+                      controls
+                      playsInline
+                      muted
+                      className="w-full max-h-48 rounded bg-black object-contain"
+                    />
+                  </div>
+                )}
+              </div>
+
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form.is_active}
+                  onChange={(e) => update('is_active', e.target.checked)}
+                />
+                Visible on the shop
+              </label>
+
+              <div className="border border-marigold/40 bg-marigold/5 rounded-md p-4">
+                <label className="flex items-center gap-2 text-sm font-medium">
+                  <input
+                    type="checkbox"
+                    checked={form.is_rental}
+                    onChange={(e) => update('is_rental', e.target.checked)}
+                  />
+                  This is a rental item (not for sale — booked by date, not bought)
+                </label>
+
+                {form.is_rental && (
+                  <div className="mt-3 space-y-3">
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className="block text-xs text-ink/60 mb-1">Rental price (₹)</label>
+                        <input
+                          type="number"
+                          value={form.rental_price}
+                          onChange={(e) => update('rental_price', e.target.value)}
+                          className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-xs text-ink/60 mb-1">Refundable deposit (₹)</label>
+                        <input
+                          type="number"
+                          value={form.rental_deposit}
+                          onChange={(e) => update('rental_deposit', e.target.value)}
+                          className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex gap-3">
+                      <div className="flex-1">
+                        <label className="block text-xs text-ink/60 mb-1">Available from</label>
+                        <input
+                          type="date"
+                          value={form.rental_start_date}
+                          onChange={(e) => update('rental_start_date', e.target.value)}
+                          className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                        />
+                      </div>
+                      <div className="flex-1">
+                        <label className="block text-xs text-ink/60 mb-1">Available until</label>
+                        <input
+                          type="date"
+                          value={form.rental_end_date}
+                          onChange={(e) => update('rental_end_date', e.target.value)}
+                          className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                        />
+                      </div>
+                      <div className="w-32">
+                        <label className="block text-xs text-ink/60 mb-1">Return within (hrs)</label>
+                        <input
+                          type="number"
+                          value={form.rental_return_hours}
+                          onChange={(e) => update('rental_return_hours', e.target.value)}
+                          className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs text-ink/60 mb-1">Eligibility notice (shown at the top of the product page)</label>
+                      <input
+                        value={form.rental_eligibility}
+                        onChange={(e) => update('rental_eligibility', e.target.value)}
+                        className="w-full border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium mb-1.5">
+                  Details (Product Type, Occasion, Fabric, Neck Type, etc.)
+                </label>
+                <div className="space-y-2">
+                  {form.specs.map((row, i) => (
+                    <div key={i} className="flex gap-2">
+                      <input
+                        placeholder="Label (e.g. Fabric)"
+                        value={row.key}
+                        onChange={(e) => updateSpec(i, 'key', e.target.value)}
+                        className="w-2/5 border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                      />
+                      <input
+                        placeholder="Value (e.g. Silk Blend)"
+                        value={row.value}
+                        onChange={(e) => updateSpec(i, 'value', e.target.value)}
+                        className="flex-1 border border-maroon/20 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-maroon/40"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => removeSpecRow(i)}
+                        className="px-2 text-ink/40 hover:text-red-700"
+                        aria-label="Remove"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  onClick={addSpecRow}
+                  className="mt-2 text-sm text-teal hover:underline"
+                >
+                  + Add another detail
+                </button>
+              </div>
+
+              {saving && savingStep && (
+                <div className="p-3 bg-maroon/5 border border-maroon/15 rounded-md flex items-center gap-2 text-sm text-maroon">
+                  <div className="w-4 h-4 border-2 border-maroon/30 border-t-maroon rounded-full animate-spin" />
+                  <span>{savingStep}</span>
+                </div>
+              )}
+
+              {message && <p className="text-sm text-maroon font-medium">{message}</p>}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="flex-1 py-3 rounded-md bg-maroon text-ivory font-medium hover:bg-maroon-dark transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+                >
+                  {saving && <div className="w-4 h-4 border-2 border-ivory/30 border-t-ivory rounded-full animate-spin" />}
+                  {saving ? (savingStep || 'Saving…') : form.id ? 'Save changes' : 'Add piece'}
+                </button>
+                {form.id && (
+                  <button type="button" onClick={resetForm} disabled={saving} className="px-4 py-3 rounded-md border border-maroon/20 text-sm hover:bg-maroon/5">
+                    Cancel
+                  </button>
+                )}
+              </div>
+            </form>
+          </div>
+
+          <div>
+            <h2 className="font-display text-xl text-maroon mb-4">Your pieces ({products.length})</h2>
+            <div className="space-y-3 max-h-[720px] overflow-y-auto pr-1">
+              {products.map((p) => (
+                <div key={p.id} className="flex gap-3 border border-maroon/10 rounded-md p-3">
+                  <div className="relative w-16 h-20 flex-shrink-0">
+                    <img src={p.image_url} alt={p.name || 'Product'} loading="lazy" className="w-full h-full object-cover rounded bg-teal/5" />
+                    {p.video_url && (
+                      <span className="absolute bottom-1 right-1 bg-black/70 text-ivory text-[10px] px-1 py-0.5 rounded flex items-center" title="Has video">
+                        ▶
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium truncate">{p.name}</p>
+                      {p.video_url && (
+                        <span className="bg-teal/10 text-teal text-[10px] font-semibold px-1.5 py-0.5 rounded">
+                          Video
+                        </span>
+                      )}
+                      {p.is_rental && (
+                        <span className="bg-marigold/20 text-maroon text-[10px] font-semibold px-1.5 py-0.5 rounded">
+                          RENTAL
+                        </span>
+                      )}
+                    </div>
+                    {p.is_rental ? (
+                      <p className="text-sm text-ink/60">
+                        ₹{p.rental_price} + ₹{p.rental_deposit} deposit · {p.rental_start_date} to {p.rental_end_date}
+                        {!p.is_active && ' · Hidden'}
+                      </p>
+                    ) : (
+                      <p className="text-sm text-ink/60">₹{p.price} · Stock: {p.stock} {!p.is_active && '· Hidden'}</p>
+                    )}
+                    <div className="flex gap-3 mt-1 text-xs">
+                      <button onClick={() => editProduct(p)} className="text-teal hover:underline">Edit</button>
+                      <button onClick={() => quickRestock(p.id, p.stock)} className="text-teal hover:underline">+ Restock</button>
+                      <button onClick={() => deleteProduct(p.id)} className="text-red-700 hover:underline">Delete</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {products.length === 0 && <p className="text-ink/50 text-sm">No pieces yet — add your first one.</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {tab === 'orders' && (
+        <div className="space-y-4">
+          {orders.length === 0 && <p className="text-ink/50 text-sm">No orders yet.</p>}
+          {orders.map((o) => (
+            <div key={o.id} className="border border-maroon/10 rounded-md p-4">
+              <div className="flex justify-between flex-wrap gap-2">
+                <div>
+                  <p className="font-medium">{o.customer_name} · {o.phone}</p>
+                  <p className="text-sm text-ink/60">{o.address}, {o.city} — {o.pincode}</p>
+                  <p className="text-sm text-ink/60 mt-1">
+                    {new Date(o.created_at).toLocaleString('en-IN')} · ₹{o.total}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <span className={`text-xs font-semibold px-2.5 py-1 rounded-full ${
+                    o.payment_status === 'paid' ? 'bg-teal/10 text-teal' : 'bg-red-50 text-red-700'
+                  }`}>
+                    {o.payment_status}
+                  </span>
+                  {o.rental_date && (
+                    <span className="block mt-1 text-xs font-semibold px-2.5 py-1 rounded-full bg-marigold/20 text-maroon">
+                      RENTAL · {new Date(o.rental_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 text-sm text-ink/70">
+                {(o.items || []).map((it, idx) => (
+                  <p key={idx}>
+                    {it.qty} × {it.name} {it.size && `(${it.size}`}{it.color && `, ${it.color}`}{it.size && ')'}
+                    {it.isRental && ` — rental ₹${it.rentalPrice} + ₹${it.rentalDeposit} deposit`}
+                  </p>
+                ))}
+              </div>
+
+              {o.rental_date ? (
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <select
+                    value={o.order_status}
+                    onChange={(e) => updateOrder(o.id, { order_status: e.target.value })}
+                    className="border border-maroon/20 rounded-md px-3 py-1.5 text-sm"
+                  >
+                    {['placed', 'picked_up', 'returned', 'cancelled'].map((s) => (
+                      <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+                    ))}
+                  </select>
+                  <label className="flex items-center gap-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={o.deposit_refunded || false}
+                      onChange={(e) => updateOrder(o.id, { deposit_refunded: e.target.checked })}
+                    />
+                    ₹50 deposit refunded to customer
+                  </label>
+                </div>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <select
+                    value={o.order_status}
+                    onChange={(e) => updateOrder(o.id, { order_status: e.target.value })}
+                    className="border border-maroon/20 rounded-md px-3 py-1.5 text-sm"
+                  >
+                    {['placed', 'packed', 'shipped', 'out_for_delivery', 'delivered', 'cancelled', 'needs_review'].map((s) => (
+                      <option key={s} value={s}>{s.replace(/_/g, ' ')}</option>
+                    ))}
+                  </select>
+                  <input
+                    placeholder="Tracking ID"
+                    defaultValue={o.tracking_id || ''}
+                    onBlur={(e) => updateOrder(o.id, { tracking_id: e.target.value })}
+                    className="border border-maroon/20 rounded-md px-3 py-1.5 text-sm w-36"
+                  />
+                  <input
+                    placeholder="Tracking URL (courier link)"
+                    defaultValue={o.tracking_url || ''}
+                    onBlur={(e) => updateOrder(o.id, { tracking_url: e.target.value })}
+                    className="border border-maroon/20 rounded-md px-3 py-1.5 text-sm flex-1 min-w-[180px]"
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
